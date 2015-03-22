@@ -1,0 +1,237 @@
+'use strict';
+
+/** @jsx m */
+/* global Link, Cesium, THREE */
+var m = require('mithril.elements');
+var Header = require('./Header');
+var _ = require('lodash');
+
+var viewer;
+var myCountry;
+var enemyCountry;
+
+var Explosion = function(position){
+  var self = this;
+  // this.billboards = new Cesium.BillboardCollection();
+  // this.particles = [];
+  viewer.entities.add({
+    position : position,
+    billboard: {
+      image : '/img/nuke.gif'
+    }
+  });
+
+  // for (var i=0; i < 2; ++i) {
+  //   this.billboards.add({
+  //     position : position,
+  //     image : '/img/nuke.gif'
+  //   });
+  // }
+
+  // Create a draw loop using requestAnimationFrame. The
+  // tick callback function is called for every animation frame.
+  // function tick() {
+  //   self.updateFrame = Cesium.requestAnimationFrame(tick);
+  //   self.update();
+  // }
+  // tick();
+};
+
+var Nuke = function(source, target){
+  var self = this;
+  this._shouldDestroy = false;
+  this.heading = 0;
+  this.roll = 0;
+  this.source = source;
+  this.target = target;
+  this.sourceBoundingSphere = new Cesium.BoundingSphere();
+  this.targetBoundingSphere = new Cesium.BoundingSphere();
+  Cesium.BoundingSphere.fromPoints(source[0].polygon.hierarchy.getValue().positions, this.sourceBoundingSphere);
+  Cesium.BoundingSphere.fromPoints(target.polygon.hierarchy.getValue().positions, this.targetBoundingSphere);
+  this.startPosition = new Cesium.Cartesian3();
+  this.position = new Cesium.Cartesian3();
+  this.sourceBoundingSphere.center.clone(this.startPosition);
+  this.targetPosition = new Cesium.Cartesian3();
+  this.targetBoundingSphere.center.clone(this.targetPosition);
+  this.lerpPos = 0;
+  this.speed = 1000;
+
+  var carto = Cesium.Ellipsoid.WGS84.cartesianToCartographic(this.startPosition);
+  carto.height = 100;
+  Cesium.Ellipsoid.WGS84.cartographicToCartesian(carto, this.startPosition);
+  this.startPosition.clone(this.position);
+
+
+  carto = Cesium.Ellipsoid.WGS84.cartesianToCartographic(this.targetPosition);
+  carto.height = 100;
+  Cesium.Ellipsoid.WGS84.cartographicToCartesian(carto, this.targetPosition);
+
+  this.pitch = Cesium.Cartesian3.angleBetween(this.startPosition, this.targetPosition);
+
+  // this.position = new Cesium.Cartesian3(-3476505.5760482615, 5353349.133063745, 0);
+  var orientation = Cesium.Transforms.headingPitchRollQuaternion(this.position, this.heading, this.pitch, this.roll);
+  var nuke = viewer.entities.add({
+    name : 'nuke',
+    position : this.position,
+    orientation : orientation,
+    model : {
+      uri : '/models/nuke.gltf',
+      minimumPixelSize : 17
+    }
+  });
+  this.entity = nuke;
+
+  var trail = viewer.entities.add({
+    name: Math.random(),
+    polyline : {
+      positions : [this.startPosition, this.position],
+      width : 10.0,
+      material : new Cesium.PolylineGlowMaterialProperty({
+        color : Cesium.Color.DEEPSKYBLUE,
+        glowPower : 0.25
+      })
+    }
+  });
+  this.trailEntity = trail;
+
+  this.trailInterval = setInterval(function(){
+    // console.log(self.position);
+    self.trailEntity.polyline.positions = [self.startPosition, self.position];
+  }, 1000);
+
+  // Create a draw loop using requestAnimationFrame. The
+  // tick callback function is called for every animation frame.
+  function tick() {
+    self.updateFrame = Cesium.requestAnimationFrame(tick);
+    self.update();
+  }
+  tick();
+};
+Nuke.prototype.update = function(){
+  var interval = Cesium.Cartesian3.distance(this.startPosition, this.targetPosition);
+  this.lerpPos += this.speed;
+
+  Cesium.Cartesian3.lerp(this.startPosition, this.targetPosition, this.lerpPos/interval, this.position);
+  var carto = Cesium.Ellipsoid.WGS84.cartesianToCartographic(this.position, carto);
+  // console.log(carto.height);
+  carto.height = 0;
+  Cesium.Ellipsoid.WGS84.cartographicToCartesian(carto, this.position);
+
+  if(Cesium.Cartesian3.distance(this.position, this.targetPosition) <= 1000){
+    this.destroy();
+  }
+  this.entity.position = this.position;
+  this.entity.orientation = Cesium.Transforms.headingPitchRollQuaternion(this.position, this.heading, this.pitch, this.roll);
+};
+Nuke.prototype.destroy = function(){
+  viewer.entities.remove(this.entity);
+  Cesium.cancelAnimationFrame(this.updateFrame);
+
+  viewer.entities.remove(this.trailEntity);
+  clearInterval(this.trailInterval);
+
+  new Explosion(this.position);
+};
+
+// var Particle = function(position, speed, image) {
+
+// }
+// Explosion.prototype.update = function(){
+//   this.billboards.
+// };
+
+var Home = {
+  controller: function() {
+    this.map = function(ctrl) {
+      return function(element, isInitialized){
+        if(!isInitialized) {
+          var provider = new Cesium.SingleTileImageryProvider({
+            url: '',
+            proxy: new Cesium.DefaultProxy('/img/tile.png'),
+          });
+
+          viewer = new Cesium.Viewer(element, {
+            baseLayerPicker: false,
+            imageryProvider: provider,
+            timeline: false,
+            scene3DOnly: true,
+            navigationHelpButton: false,
+            navigationInstructionsInitiallyVisible: false,
+            homeButton: false,
+            geocoder: false,
+            animation: false
+          });
+          var nukes = [];
+
+          var instantiateNuke = function(height) {
+            nukes.push(new Nuke());
+          };
+
+          // instantiateNuke(5000.0);
+
+          var promise = Cesium.GeoJsonDataSource.load('/json/world.topojson');
+          promise.then(function(data) {
+            viewer.dataSources.add(data);
+            var entities = data.entities.values;
+            var colorHash = {};
+            var i;
+            var namesHash = {};
+            for (i=0; i< entities.length; ++i) {
+              if(!namesHash[entities[i].name]){
+                namesHash[entities[i].name] = [];
+              }
+              namesHash[entities[i].name].push(entities[i]);
+            }
+
+            var entityKeys = Object.keys(namesHash);
+            var rndCountryIdx = Math.floor(Math.random() * entityKeys.length);
+            var rndEnemyIdx = rndCountryIdx;
+            while(rndEnemyIdx === rndCountryIdx) {
+              rndEnemyIdx = Math.floor(Math.random() * entityKeys.length);
+            }
+
+            for (i = 0; i < entityKeys.length; i++) {
+              var entityArray = namesHash[entityKeys[i]];
+              var color;
+              if(rndCountryIdx === i) {
+                myCountry = entityArray;
+                viewer.flyTo(entityArray[0], {
+                  offset: new Cesium.HeadingPitchRange(0, -Math.PI, 10000000)
+                });
+                color = Cesium.Color.BLUE;
+              }
+              else if(rndEnemyIdx === i) {
+                enemyCountry = entityArray;
+                color = Cesium.Color.RED;
+              }
+              else {
+                color = Cesium.Color.STEELBLUE;
+              }
+
+              for(var j=0; j< entityArray.length; ++j){
+                entityArray[j].polygon.material = color;
+                entityArray[j].polygon.outlineColor = Cesium.Color.WHITE;
+              }
+            }
+          });
+        }
+      };
+    };
+
+    this.launchNuke = function(e) {
+      if(e.keyCode === 78) {
+        new Nuke(myCountry, viewer.selectedEntity);
+      }
+    };
+    window.onkeyup = this.launchNuke;
+  },
+  view: function (ctrl) {
+    return [Header.view(), (
+      <div>
+        <div id="cesium" config={ctrl.map()}></div>
+      </div>
+    )];
+  }
+};
+
+module.exports = Home;
